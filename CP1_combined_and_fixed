@@ -1,0 +1,385 @@
+
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+from collections import defaultdict
+
+class Robot:
+
+    def __init__(robot, grid_size=5):
+        robot.initial_position = (random.randint(0, grid_size - 1), random.randint(0, grid_size - 1))
+        robot.goal = robot.initial_position
+        while robot.goal == robot.initial_position:
+            robot.goal = (random.randint(0, grid_size - 1), random.randint(0, grid_size - 1))
+        robot.position = robot.initial_position
+        robot.shape = 'o'
+        robot.color = 'black'
+        robot.wait_count = 0         
+
+    def return_position(robot):
+        return robot.position
+
+    def return_type(robot):
+        return "Robot"
+
+    def distance_to_goal(robot):
+        x, y = robot.position
+        gx, gy = robot.goal
+        return abs(gx - x) + abs(gy - y)
+
+    def reached_goal(robot):
+        return robot.position == robot.goal
+
+    def propose_move(robot):
+        if robot.reached_goal():
+            return robot.position
+        x, y = robot.position
+        gx, gy = robot.goal
+        dx, dy = gx - x, gy - y
+        if abs(dx) >= abs(dy) and dx != 0:
+            return (x + (1 if dx > 0 else -1), y)
+        elif dy != 0:
+            return (x, y + (1 if dy > 0 else -1))
+        return robot.position
+
+
+class Quadrotor(Robot):
+    def __init__(self, grid_size=5):
+        super().__init__(grid_size)
+        self.shape = '^'
+        self.color = 'red'
+        self.group = 'drone'
+
+    def return_type(quad):
+        return "Quadrotor"
+
+
+class Humanoid(Robot):
+    def __init__(self, grid_size=5):
+        super().__init__(grid_size)
+        self.shape = 'o'
+        self.color = 'blue'
+        self.group = 'ground'
+
+    def return_type(human):
+        return "Humanoid"
+
+
+class Differential_Drive(Robot):
+    def __init__(self, grid_size=5):
+        super().__init__(grid_size)
+        self.shape = 's'
+        self.color = 'green'
+        self.group = 'ground'
+
+    def return_type(diff):
+        return "Differential Drive"
+
+
+def compatible(r1, r2):
+    """A cell can hold at most one drone AND at most one ground robot."""
+    return r1.group != r2.group
+
+ROBOT_TYPES = [Quadrotor, Humanoid, Differential_Drive]
+
+class Grid:
+    def __init__(self, size):
+        self.size = size
+        self.rows =size
+        self.cols = size
+        self.robots = []
+        self.grid = [[' ' for _ in range(self.cols)] for _ in range(self.rows)]
+
+    def random_cell(self):
+        return (np.random.randint(0, self.size), np.random.randint(0, self.size))
+
+    def populate_grid(self, num_robots):
+        used_positions = set()                   
+        for _ in range(num_robots):
+            cls = random.choice(ROBOT_TYPES)
+            robot = cls(self.size)
+            while robot.initial_position in used_positions:
+                robot.initial_position = self.random_cell()
+                robot.goal = robot.initial_position
+                while robot.goal == robot.initial_position: 
+                    robot.goal = self.random_cell()
+                robot.position = robot.initial_position
+            used_positions.add(robot.initial_position)
+            self.robots.append(robot)
+
+    def update_grid(self, robot, position):
+        x, y = position
+        if 0 <= x < self.rows and 0 <= y < self.cols:
+            self.grid[x][y] = robot.shape
+        else:
+            print("Position out of bounds")
+    def target2grid(self, target, position):
+        x, y = position
+        if 0 <= x < self.rows and 0 <= y < self.cols:
+            self.grid[x][y] = target.shape
+        else:
+            print("Position out of bounds")
+
+    def define_robot(shape, color):
+        self.shape = shape
+        self.color = color
+    
+    def display(self, timestep = 0):
+       fig, ax = plt.subplots(figsize = (6,6))
+       for robot in self.robots:
+           if robot.reached_goal():
+               continue 
+           x,y = robot.position
+           gx, gy = robot.goal
+           ax.plot([x, gx], [y, gy], '--', color=robot.color, alpha=0.5)
+           ax.scatter(x,y,marker=robot.shape, color=robot.color, s=140, label=robot.return_type())
+
+           ax.scatter(gx, gy, marker='D', color=robot.color, s=70, facecolors='none')
+
+           ax.set_xlim(-1, self.size)
+           ax.set_ylim(-1, self.size)
+           ax.set_xticks(range(self.size))
+           ax.set_yticks(range(self.size))
+           ax.grid(True)
+           ax.set_title(f"Robot Grid Navigation t={timestep}")
+           handles, labels = ax.get_legend_handles_labels()
+           by_label = dict(zip(labels, handles))
+           ax.legend(by_label.values(), by_label.keys(), loc='center left', bbox_to_anchor=(1,0.5))
+           plt.show()
+
+    def get_occupied_cells(self, exclude=None):
+        """Cells currently held by active robots, optionally excluding one robot."""
+        occupied = defaultdict(list)  # cell 2 list of robots there
+        for r in self.robots:
+            if r is exclude or r.reached_goal():
+                continue
+            occupied[r.position].append(r)
+        return occupied
+
+    def try_escape_move(self, robot):
+        """Try a lateral/backward move for a deadlocked robot to free up space.
+        Only used as a fallback when normal greedy movement has stalled."""
+        x, y = robot.position
+        candidates = [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+        random.shuffle(candidates)
+
+        occupied = self.get_occupied_cells(exclude=robot)
+
+        for cell in candidates:
+            cx, cy = cell
+            if not (0 <= cx < self.size and 0 <= cy < self.size):
+                continue
+            occupants = occupied.get(cell, [])
+            # legal if empty, or only holds a compatible robot
+            if all(compatible(robot, o) for o in occupants):
+                return cell
+        return robot.position  # no escape available so stay
+
+
+
+    def step(self):
+        active = [r for r in self.robots if not r.reached_goal()]
+        if not active:
+            return False
+
+        proposal = {r: r.propose_move() for r in active}
+        blocked = set()
+        changed = True
+
+        while changed:
+            changed = False
+            targets = defaultdict(list)
+            for r in active:
+                if r not in blocked:
+                    targets[proposal[r]].append(r)
+
+            for cell, robots_here in targets.items():
+                if len(robots_here) <= 1:
+                    continue
+
+                # multiple robots sharing this cell as their goal so let all in
+                goal_group = [r for r in robots_here if r.goal == cell]
+                if goal_group and len(goal_group) == len(robots_here):
+                    continue
+
+                # neighbor swap exception
+                if (len(robots_here) == 2 and
+                        proposal[robots_here[0]] == robots_here[1].position and
+                        proposal[robots_here[1]] == robots_here[0].position):
+                    continue
+
+                # priority: farthest from goal moves first; ties go random
+                ordered = sorted(robots_here,
+                                    key=lambda rr: (-rr.wait_count, -rr.distance_to_goal(), random.random()))
+                accepted = []
+                for r in ordered:
+                    if all(compatible(r, a) for a in accepted):
+                        accepted.append(r)
+                    elif r not in blocked:
+                        blocked.add(r)
+                        proposal[r] = r.position   # forced to skip turn
+                        changed = True
+
+            # movers colliding with robots forced to stay stationary this round
+            stationary = {r.position: r for r in active if r in blocked}
+            for r in active:
+                if r in blocked:
+                    continue
+                dest = proposal[r]
+                occupant = stationary.get(dest)
+                if occupant and occupant is not r and not compatible(r, occupant) and r.goal != dest:
+                    blocked.add(r)
+                    proposal[r] = r.position
+                    changed = True
+
+        for r in active:
+            if r in blocked:
+                r.wait_count +=1
+            else:
+                r.wait_count = 0
+            r.position = proposal[r]
+        return True
+
+    def run(self, max_steps=500, stall_limit=15, max_escapes=30):
+        frames = [self.snapshot()]
+        prev_positions = tuple(r.position for r in self.robots)
+        stall_count = 0
+        escapes_used = 0
+
+        for _ in range(max_steps):
+            moved = self.step()
+            frames.append(self.snapshot())
+            if not moved:
+                print("All robots reached their goals.")
+                break
+
+            current_positions = tuple(r.position for r in self.robots)
+            if current_positions == prev_positions:
+                stall_count += 1
+            else:
+                stall_count = 0
+            prev_positions = current_positions
+
+            if stall_count >= stall_limit:
+                if escapes_used >= max_escapes:
+                    stuck = [r for r in self.robots if not r.reached_goal()]
+                    print(f"Deadlock unresolved at t={len(frames)-1}: "
+                          f"{len(stuck)} robot(s) still blocked after {max_escapes} escape attempts.")
+                    break
+
+                stuck = [r for r in self.robots if not r.reached_goal()]
+                # pick the robot that's waited longest to take the escape move
+                mover = max(stuck, key=lambda r: r.wait_count)
+                new_pos = self.try_escape_move(mover)
+                if new_pos != mover.position:
+                    print(f"Deadlock at t={len(frames)-1}: nudging "
+                          f"{mover.return_type()} from {mover.position} to {new_pos}")
+                    mover.position = new_pos
+                    mover.wait_count = 0
+                    escapes_used += 1
+                    frames.append(self.snapshot())
+                stall_count = 0
+                prev_positions = tuple(r.position for r in self.robots)
+
+        return frames
+
+    def snapshot(self):
+        return [(r.return_type(), r.position, r.goal, r.shape, r.color)
+                for r in self.robots if not r.reached_goal()]
+
+    def display(self, timestep=0):
+        """Static single-frame plot (non-interactive fallback)."""
+        fig, ax = plt.subplots(figsize=(6, 6))
+        for kind, pos, goal, shape, color in self.snapshot():
+            x, y = pos
+            gx, gy = goal
+            ax.plot([x, gx], [y, gy], '--', color=color, alpha=0.5)
+            ax.scatter(x, y, marker=shape, color=color, s=140, label=kind)
+            ax.scatter(gx, gy, marker='D', color=color, s=70, facecolors='none')
+        ax.set_xlim(-1, self.size)
+        ax.set_ylim(-1, self.size)
+        ax.set_xticks(range(self.size))
+        ax.set_yticks(range(self.size))
+        ax.grid(True)
+        ax.set_title(f"Robot Grid Navigation — t={timestep}")
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.show()
+
+
+class Visualizer:
+
+    def __init__(self, frames, n):
+        self.frames = frames
+        self.n = n
+        self.t = 0
+        self.fig, self.ax = plt.subplots(figsize=(7, 7))
+        self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+        self.draw()
+
+    def on_key(self, event):
+        if event.key == 'right' and self.t < len(self.frames) - 1:
+            self.t += 1
+            self.draw()
+        elif event.key == 'left' and self.t > 0:
+            self.t -= 1
+            self.draw()
+
+    def draw(self):
+        self.ax.clear()
+        seen_labels = set()
+        for kind, pos, goal, shape, color in self.frames[self.t]:
+            x, y = pos
+            gx, gy = goal
+            self.ax.plot([x, gx], [y, gy], '--', color=color, alpha=0.5)
+            self.ax.scatter(x, y, marker=shape, color=color, s=140,
+                             label=kind if kind not in seen_labels else None, zorder=3)
+            self.ax.scatter(gx, gy, marker='D', color=color, s=70,
+                             facecolors='none', zorder=3,
+                             label='Goal Position' if 'Goal Position' not in seen_labels else None)
+            seen_labels.add(kind)
+            seen_labels.add('Goal Position')
+
+        self.ax.set_xlim(-1, self.n)
+        self.ax.set_ylim(-1, self.n)
+        self.ax.set_xticks(range(self.n))
+        self.ax.set_yticks(range(self.n))
+        self.ax.grid(True)
+        self.ax.set_title(f"Robot Grid Navigation — {self.n}×{self.n} — t={self.t}")
+        self.ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        self.fig.canvas.draw_idle()
+
+    def show(self):
+        plt.show()
+
+
+
+
+
+def main():
+    print("Warehouse Robot Management")
+    print("Enter grid size n (3-10). n=5 reproduces the base 5x5 / 10-robot case.")
+    while True:
+        try:
+            n = int(input("n = "))
+            if 3 <= n <= 10:
+                break
+            print("n must be between 3 and 10.")
+        except ValueError:
+            print("Please enter an integer.")
+
+    num_robots = 2 * n  # required: robot count always equals 2*n
+    grid = Grid(n)
+    grid.populate_grid(num_robots)
+
+    print(f"Simulating {num_robots} robots on a {n}x{n} grid...")
+    frames = grid.run()
+    print(f"Simulation finished in {len(frames)-1} timesteps. "
+          f"Use → to step forward, ← to step backward.")
+
+    Visualizer(frames, n).show()
+
+
+if __name__ == "__main__":
+    main()
